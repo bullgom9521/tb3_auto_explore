@@ -10,21 +10,21 @@ from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
-    # === Launch arguments ===
+    # === Launch 인자 정의 ===
     use_sim_time = LaunchConfiguration("use_sim_time", default="true")
     slam = LaunchConfiguration("slam", default="true")
 
-    # === 경로 설정 ===
+    # === 패키지 경로 설정 ===
     tb3_nav2_dir = get_package_share_directory("turtlebot3_navigation2")
     tb3_nav2_launch = os.path.join(tb3_nav2_dir, "launch", "navigation2.launch.py")
-
-    # === SLAM Toolbox 안전 설정 경로 ===
     tb3_auto_dir = get_package_share_directory("tb3_auto_explore")
+
+    # === slam loofsafe 파라미터 ===
     slam_config_file = os.path.join(
         tb3_auto_dir, "config", "slam_toolbox_loopsafe.yaml"
     )
 
-    # === Navigation2 포함 ===
+    # === Navigation2 실행 ===
     tb3_nav2_launch_include = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(tb3_nav2_launch),
         launch_arguments=[
@@ -33,7 +33,7 @@ def generate_launch_description():
         ],
     )
 
-    # === SLAM Toolbox 포함 (slam=True일 때만) ===
+    # === SLAM Toolbox 실행 (slam=True일 때만) ===
     slam_toolbox_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
@@ -55,21 +55,10 @@ def generate_launch_description():
         executable="frontier_explorer",
         name="frontier_explorer",
         output="screen",
-        parameters=[
-            {
-                "use_sim_time": use_sim_time,
-                "map_topic": "/map",
-                "global_frame": "map",
-                "robot_base_frame": "base_footprint",
-                "min_frontier_size": 10,
-                "goal_clearance_cells": 5,
-                "timeout_sec": 10.0,
-                "wait_nav2_sec": 5.0,
-            }
-        ],
+        parameters=[{"use_sim_time": use_sim_time}],
     )
 
-    # === Declare arguments ===
+    # === Launch Declare arguments ===
     declare_use_sim_time_arg = DeclareLaunchArgument(
         "use_sim_time",
         default_value="true",

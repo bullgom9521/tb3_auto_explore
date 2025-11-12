@@ -14,7 +14,7 @@ slam_toolbox:
     # === 센서 및 해상도 ===
     use_imu: true
     max_laser_range: 3.5
-    resolution: 0.05
+    resolution: 0.03
 
     # === 필요시 루프클로저 완전 비활성화 ===
     # use_loop_closure: false
