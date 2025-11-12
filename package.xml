@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<package format="3">
+<name>tb3_auto_explore</name>
+<version>0.0.1</version>
+<description>Simple frontier-based autonomous exploration for TurtleBot3 + Nav2 + SLAM</description>
+<maintainer email="you@example.com">Your Name</maintainer>
+<license>Apache-2.0</license>
+
+
+<buildtool_depend>ament_python</buildtool_depend>
+
+
+<exec_depend>rclpy</exec_depend>
+<exec_depend>nav_msgs</exec_depend>
+<exec_depend>geometry_msgs</exec_depend>
+<exec_depend>nav2_msgs</exec_depend>
+<exec_depend>tf2_ros</exec_depend>
+<exec_depend>tf_transformations</exec_depend>
+<exec_depend>builtin_interfaces</exec_depend>
+
+
+<!-- Nav2 / SLAM은 별도 패키지에서 런치 포함 -->
+<exec_depend>nav2_bringup</exec_depend>
+<exec_depend>slam_toolbox</exec_depend>
+
+
+<export>
+<build_type>ament_python</build_type>
+</export>
+</package>
