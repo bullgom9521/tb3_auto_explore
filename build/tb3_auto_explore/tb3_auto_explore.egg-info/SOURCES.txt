@@ -1,7 +1,16 @@
 package.xml
 setup.cfg
 setup.py
+config/blank.yaml
+config/ekf.yaml
+config/nav2.yaml
+config/nav2_explore_tune.yaml
+config/nav2_params.yaml
+config/slam_toolbox.yaml
+config/slam_toolbox_loopsafe.yaml
 launch/explore_bringup.launch.py
+param/burger.yaml
+param/slam_toolbox.yaml
 resource/tb3_auto_explore
 tb3_auto_explore/__init__.py
 tb3_auto_explore/frontier_explorer.py

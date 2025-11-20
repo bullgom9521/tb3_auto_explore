@@ -1,39 +1,50 @@
+import os
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch.conditions import IfCondition  # ✅ 조건부 실행 import 추가
-import os
-
+from launch.conditions import IfCondition
 from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
-    # === Launch 인자 정의 ===
+    # === 1. Launch 인자 정의 ===
     use_sim_time = LaunchConfiguration("use_sim_time", default="true")
     slam = LaunchConfiguration("slam", default="true")
+    # [추가] RViz 실행 여부 (기본값 True)
+    use_rviz = LaunchConfiguration("use_rviz", default="true")
 
-    # === 패키지 경로 설정 ===
-    tb3_nav2_dir = get_package_share_directory("turtlebot3_navigation2")
-    tb3_nav2_launch = os.path.join(tb3_nav2_dir, "launch", "navigation2.launch.py")
+    # 내 패키지 경로
     tb3_auto_dir = get_package_share_directory("tb3_auto_explore")
 
-    # === slam loofsafe 파라미터 ===
+    # 내 패키지의 burger.yaml 사용
+    default_param_file = os.path.join(tb3_auto_dir, "param", "burger.yaml")
+
+    params_file = LaunchConfiguration("params_file")
+
+    # [추가] RViz 설정 파일 경로 (Nav2 기본 설정 사용)
+    # 만약 내 패키지에 커스텀 rviz 파일이 있다면 그 경로로 바꿔주면 됩니다.
+    nav2_bringup_dir = get_package_share_directory("nav2_bringup")
+    rviz_config_file = os.path.join(nav2_bringup_dir, "rviz", "nav2_default_view.rviz")
+
+    # === 2. 패키지 경로 및 설정 ===
+    nav2_launch_file = os.path.join(nav2_bringup_dir, "launch", "navigation_launch.py")
     slam_config_file = os.path.join(
         tb3_auto_dir, "config", "slam_toolbox_loopsafe.yaml"
     )
 
-    # === Navigation2 실행 ===
-    tb3_nav2_launch_include = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(tb3_nav2_launch),
-        launch_arguments=[
-            ("use_sim_time", use_sim_time),
-            ("slam", slam),
-        ],
+    # === 3. Navigation2 실행 ===
+    nav2_launch_include = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(nav2_launch_file),
+        launch_arguments={
+            "use_sim_time": use_sim_time,
+            "params_file": params_file,
+            "autostart": "true",
+        }.items(),
     )
 
-    # === SLAM Toolbox 실행 (slam=True일 때만) ===
+    # === 4. SLAM Toolbox 실행 ===
     slam_toolbox_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
@@ -49,35 +60,60 @@ def generate_launch_description():
         condition=IfCondition(slam),
     )
 
-    # === Frontier Explorer 노드 ===
+    # === 5. Frontier Explorer 노드 ===
     explorer = Node(
         package="tb3_auto_explore",
         executable="frontier_explorer",
         name="frontier_explorer",
         output="screen",
+        parameters=[
+            {
+                "use_sim_time": use_sim_time,
+            }
+        ],
+    )
+
+    # === 6. [추가] RViz2 노드 ===
+    rviz_node = Node(
+        package="rviz2",
+        executable="rviz2",
+        name="rviz2",
+        output="screen",
+        arguments=["-d", rviz_config_file],  # 설정 파일 로드
+        condition=IfCondition(use_rviz),  # use_rviz가 True일 때만 실행
         parameters=[{"use_sim_time": use_sim_time}],
     )
 
-    # === Launch Declare arguments ===
-    declare_use_sim_time_arg = DeclareLaunchArgument(
-        "use_sim_time",
-        default_value="true",
-        description="Use simulation (Gazebo/Isaac) clock if true",
+    # === 7. LaunchDescription 구성 ===
+    ld = LaunchDescription()
+
+    ld.add_action(
+        DeclareLaunchArgument(
+            "use_sim_time", default_value="true", description="Use simulation clock"
+        )
+    )
+    ld.add_action(
+        DeclareLaunchArgument("slam", default_value="true", description="Run SLAM")
+    )
+    # [추가] RViz 인자 선언
+    ld.add_action(
+        DeclareLaunchArgument(
+            "use_rviz", default_value="true", description="Start RViz2 automatically"
+        )
     )
 
-    declare_slam_arg = DeclareLaunchArgument(
-        "slam", default_value="true", description="Whether to run SLAM Toolbox"
+    # 파라미터 파일 인자
+    ld.add_action(
+        DeclareLaunchArgument(
+            "params_file",
+            default_value=default_param_file,
+            description="Full path to the ROS2 parameters file to use for all launched nodes",
+        )
     )
 
-    # === LaunchDescription 구성 ===
-    ld = LaunchDescription(
-        [
-            declare_use_sim_time_arg,
-            declare_slam_arg,
-            tb3_nav2_launch_include,
-            explorer,
-            slam_toolbox_launch,  # ✅ 콤마 포함
-        ]
-    )
+    ld.add_action(nav2_launch_include)
+    ld.add_action(slam_toolbox_launch)
+    ld.add_action(rviz_node)  # RViz 추가
+    ld.add_action(explorer)
 
     return ld
