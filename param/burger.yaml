@@ -1,6 +1,6 @@
 amcl:
   ros__parameters:
-    use_sim_time: False
+    use_sim_time: True
     alpha1: 0.2
     alpha2: 0.2
     alpha3: 0.2
@@ -41,15 +41,15 @@ amcl:
 
 amcl_map_client:
   ros__parameters:
-    use_sim_time: False
+    use_sim_time: True
 
 amcl_rclcpp_node:
   ros__parameters:
-    use_sim_time: False
+    use_sim_time: True
 
 bt_navigator:
   ros__parameters:
-    use_sim_time: False
+    use_sim_time: True
     global_frame: map
     robot_base_frame: base_link
     odom_topic: /odom
@@ -94,11 +94,11 @@ bt_navigator:
 
 bt_navigator_rclcpp_node:
   ros__parameters:
-    use_sim_time: False
+    use_sim_time: True
 
 controller_server:
   ros__parameters:
-    use_sim_time: False
+    use_sim_time: True
     controller_frequency: 10.0
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.5
@@ -124,7 +124,7 @@ controller_server:
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
       debug_trajectory_details: True
-      min_vel_x: -0.22
+      min_vel_x: 0.05
       min_vel_y: 0.0
       max_vel_x: 0.22
       max_vel_y: 0.0
@@ -134,16 +134,16 @@ controller_server:
       min_speed_theta: 0.0
       # Add high threshold velocity for turtlebot 3 issue.
       # https://github.com/ROBOTIS-GIT/turtlebot3_simulations/issues/75
-      acc_lim_x: 2.5
+      acc_lim_x: 1.0
       acc_lim_y: 0.0
-      acc_lim_theta: 3.2
-      decel_lim_x: -2.5
+      acc_lim_theta: 2.0
+      decel_lim_x: -1.0
       decel_lim_y: 0.0
-      decel_lim_theta: -3.2
+      decel_lim_theta: -2.0
       vx_samples: 20
       vy_samples: 0
       vtheta_samples: 40
-      sim_time: 1.5
+      sim_time: 2.0
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.2
@@ -152,8 +152,8 @@ controller_server:
       short_circuit_trajectory_evaluation: True
       stateful: True
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      BaseObstacle.scale: 0.02
-      PathAlign.scale: 16.0
+      BaseObstacle.scale: 0.01
+      PathAlign.scale: 32.0
       PathAlign.forward_point_distance: 0.1
       GoalAlign.scale: 12.0
       GoalAlign.forward_point_distance: 0.1
@@ -183,7 +183,7 @@ behavior_server:
 
 controller_server_rclcpp_node:
   ros__parameters:
-    use_sim_time: False
+    use_sim_time: True
 
 local_costmap:
   local_costmap:
@@ -192,17 +192,17 @@ local_costmap:
       publish_frequency: 10.0
       global_frame: odom
       robot_base_frame: base_link
-      use_sim_time: False
+      use_sim_time: True
       rolling_window: true
       width: 3
       height: 3
       resolution: 0.03
-      robot_radius: 0.1
+      robot_radius: 0.11
       plugins: ["obstacle_layer", "voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         inflation_radius: 0.1
-        cost_scaling_factor: 2.0
+        cost_scaling_factor: 1.5
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
@@ -238,10 +238,10 @@ local_costmap:
       always_send_full_costmap: True
   local_costmap_client:
     ros__parameters:
-      use_sim_time: False
+      use_sim_time: True
   local_costmap_rclcpp_node:
     ros__parameters:
-      use_sim_time: False
+      use_sim_time: True
 
 global_costmap:
   global_costmap:
@@ -251,7 +251,7 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_link
       use_sim_time: True
-      robot_radius: 0.1
+      robot_radius: 0.11
       resolution: 0.03
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "voxel_layer", "inflation_layer"]
@@ -294,24 +294,24 @@ global_costmap:
         map_subscribe_transient_local: True
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 2.0
+        cost_scaling_factor: 10.0
         inflation_radius: 0.1
       always_send_full_costmap: True
   global_costmap_client:
     ros__parameters:
-      use_sim_time: False
+      use_sim_time: True
   global_costmap_rclcpp_node:
     ros__parameters:
-      use_sim_time: False
+      use_sim_time: True
 
 map_server:
   ros__parameters:
-    use_sim_time: False
+    use_sim_time: True
     yaml_filename: "map.yaml"
 
 map_saver:
   ros__parameters:
-    use_sim_time: False
+    use_sim_time: True
     save_map_timeout: 5.0
     free_thresh_default: 0.25
     occupied_thresh_default: 0.65
@@ -320,17 +320,17 @@ map_saver:
 planner_server:
   ros__parameters:
     expected_planner_frequency: 20.0
-    use_sim_time: False
+    use_sim_time: True
     planner_plugins: ["GridBased"]
     GridBased:
       plugin: "nav2_navfn_planner/NavfnPlanner"
       tolerance: 0.5
-      use_astar: false
+      use_astar: true
       allow_unknown: true
 
 planner_server_rclcpp_node:
   ros__parameters:
-    use_sim_time: False
+    use_sim_time: True
 
 recoveries_server:
   ros__parameters:
@@ -355,7 +355,7 @@ recoveries_server:
 
 robot_state_publisher:
   ros__parameters:
-    use_sim_time: False
+    use_sim_time: True
 
 waypoint_follower:
   ros__parameters:

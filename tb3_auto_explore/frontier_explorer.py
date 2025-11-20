@@ -13,9 +13,12 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from rclpy.action import ActionClient
 
 from geometry_msgs.msg import PoseStamped, Point
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Path
 from nav2_msgs.action import NavigateToPose
 from rosgraph_msgs.msg import Clock
+
+# 서비스 호출을 위한 임포트
+from slam_toolbox.srv import SaveMap, Pause
 
 from tf2_ros import Buffer, TransformListener
 
@@ -41,24 +44,24 @@ class FrontierExplorer(Node):
         self.declare_parameter("map_topic", "/map")
         self.declare_parameter("global_frame", "map")
         self.declare_parameter("robot_base_frame", "base_link")
-
-        # [파라미터] 아주 작은 자투리 영역도 찾도록 크기 3으로 설정
-        self.declare_parameter("min_frontier_size", 3)
+        self.declare_parameter("min_frontier_size", 5)  # 기본값 7
         self.declare_parameter("goal_clearance_cells", 1)
-
-        # [수정] 10초 이상 도달 못하면 즉시 포기하고 딴 데로 감
-        self.declare_parameter("goal_timeout_sec", 15.0)
-
+        self.declare_parameter("goal_timeout_sec", 30.0)
         self.declare_parameter("blacklist_clear_radius", 0.5)
         self.declare_parameter("max_goal_attempts_per_frontier", 2)
+
+        # 맵 저장 이름 파라미터
+        self.declare_parameter("map_name", "my_map")
 
         # Read Params
         self.map_topic = self.get_parameter("map_topic").value
         self.global_frame = self.get_parameter("global_frame").value
         self.base_frame = self.get_parameter("robot_base_frame").value
-        self.min_frontier = self.get_parameter("min_frontier_size").value
-        self.clearance = self.get_parameter("goal_clearance_cells").value
 
+        # [변수] 파라미터 값을 변수로 저장 (동적 변경을 위해)
+        self.min_frontier = self.get_parameter("min_frontier_size").value
+
+        self.clearance = self.get_parameter("goal_clearance_cells").value
         self.goal_timeout_sec = self.get_parameter("goal_timeout_sec").value
         self.blacklist_clear_radius_m = self.get_parameter(
             "blacklist_clear_radius"
@@ -66,6 +69,7 @@ class FrontierExplorer(Node):
         self.max_goal_attempts = self.get_parameter(
             "max_goal_attempts_per_frontier"
         ).value
+        self.map_name_val = self.get_parameter("map_name").value
 
         # ===== Subscriptions & Action Client =====
         qos = QoSProfile(
@@ -76,12 +80,18 @@ class FrontierExplorer(Node):
         self.map_sub = self.create_subscription(
             OccupancyGrid, self.map_topic, self.on_map, qos
         )
-        # /clock 토픽 구독 (시뮬레이션 시간 확인용)
         self.clock_sub = self.create_subscription(Clock, "/clock", self.on_clock, 10)
+        self.plan_sub = self.create_subscription(Path, "/plan", self.on_plan, 10)
 
         self.buffer = Buffer()
         self.tf_listener = TransformListener(self.buffer, self)
         self.nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
+
+        # SLAM Toolbox 제어 클라이언트
+        self.save_map_client = self.create_client(SaveMap, "/slam_toolbox/save_map")
+        self.pause_slam_client = self.create_client(
+            Pause, "/slam_toolbox/pause_new_measurements"
+        )
 
         # ===== State =====
         self._have_map = False
@@ -95,11 +105,12 @@ class FrontierExplorer(Node):
         self.current_target_grid: Optional[Tuple[int, int]] = None
         self.goal_start_time = None
 
-        # [플래그] Timeout 발생 시 켜지는 '멀리 튀기' 모드
         self.force_long_range = False
-
-        # [추가] 'No valid goal found' 연속 횟수 카운트
+        self.path_update_count = 0
         self.no_valid_goal_count = 0
+
+        # [추가] 'No frontiers found' 연속 횟수 카운트
+        self.no_frontier_count = 0
 
         self.sent_goals_cells: Set[Tuple[int, int]] = set()
         self.goal_attempts: Dict[Tuple[int, int], int] = {}
@@ -108,13 +119,11 @@ class FrontierExplorer(Node):
         self.start_pose = None
         self.going_home = False
         self.start_time_sec = None
-
-        # [수정] 240초(4분)가 지나면 무조건 복귀
         self.time_limit_sec = 240.0
 
         self.timer = self.create_timer(1.0, self.watchdog_cb)
         self.get_logger().info(
-            f"Explorer Started. Timeout: {self.goal_timeout_sec}s, Mission Limit: {self.time_limit_sec}s"
+            f"Explorer Started. [Auto-Save & Return] Limit: {self.time_limit_sec}s"
         )
 
     def on_map(self, grid: OccupancyGrid) -> None:
@@ -131,52 +140,58 @@ class FrontierExplorer(Node):
         if self.current_goal_future is None and not self.going_home:
             self.plan_and_go(grid)
 
+    def on_plan(self, msg: Path) -> None:
+        if self._goal_handle is not None and not self.going_home:
+            self.path_update_count += 1
+            if self.path_update_count >= 15:
+                self.get_logger().warn(
+                    f"[Trigger] Path replanned 15 times! Cancelling."
+                )
+                if self.current_target_grid:
+                    self.blacklist_cells.add(self.current_target_grid)
+                self.force_long_range = False
+                try:
+                    self._goal_handle.cancel_goal_async()
+                except:
+                    pass
+                self.path_update_count = 0
+                self.current_goal_future = None
+                self._goal_handle = None
+
     def on_clock(self, msg: Clock) -> None:
         now_sec = msg.clock.sec + msg.clock.nanosec * 1e-9
         if self.start_time_sec is None:
             self.start_time_sec = now_sec
             return
-
         elapsed = now_sec - self.start_time_sec
-
         if not self.going_home and self.start_pose and elapsed >= self.time_limit_sec:
             self.get_logger().info(
-                f"[Timer] Mission Time Limit ({elapsed:.1f}s >= {self.time_limit_sec}s) reached. FORCE RETURNING HOME."
+                f"[Timer] Time Limit ({elapsed:.1f}s). RETURNING HOME."
             )
             self.go_home()
 
     def watchdog_cb(self) -> None:
         now = self.get_clock().now()
-
-        # 1. 맵/동작 멈춤 감지
         if self._have_map and self.current_goal_future is None and not self.going_home:
             delta = (now - self._last_map_time).nanoseconds * 1e-9
             if delta > 5.0:
                 self.plan_and_go(self._last_map, use_relaxation=True)
 
-        # 2. [핵심 기능] 10초 타임아웃 체크 & 재계획 트리거
         if (
             self._goal_handle is not None
             and self.goal_start_time is not None
             and not self.going_home
         ):
             delta = (now - self.goal_start_time).nanoseconds * 1e-9
-
             if delta > self.goal_timeout_sec:
-                self.get_logger().warn(
-                    f"[Watchdog] Goal Stuck ({delta:.1f}s) > 10s. Changing Target!"
-                )
-
+                self.get_logger().warn(f"[Watchdog] Timeout ({delta:.1f}s).")
                 if self.current_target_grid:
                     self.blacklist_cells.add(self.current_target_grid)
-
-                self.force_long_range = True
-
+                self.force_long_range = False
                 try:
                     self._goal_handle.cancel_goal_async()
                 except:
                     pass
-
                 self.current_goal_future = None
                 self._goal_handle = None
 
@@ -197,19 +212,45 @@ class FrontierExplorer(Node):
         except:
             return None
 
+    def save_and_pause_slam(self):
+        # 1. 맵 저장
+        if self.save_map_client.wait_for_service(timeout_sec=1.0):
+            req = SaveMap.Request()
+            req.name.data = self.map_name_val
+            future = self.save_map_client.call_async(req)
+            self.get_logger().info(f"Requesting Map Save: {self.map_name_val}")
+        else:
+            self.get_logger().warn("SaveMap service not available!")
+
+        # 2. 매핑 일시정지
+        if self.pause_slam_client.wait_for_service(timeout_sec=1.0):
+            req = Pause.Request()
+            self.pause_slam_client.call_async(req)
+            self.get_logger().info("Requesting SLAM Pause (Stop Mapping)")
+        else:
+            self.get_logger().warn("Pause SLAM service not available!")
+
     def go_home(self):
         if not self.start_pose:
             self.get_logger().error("Cannot go home: Start pose not saved yet.")
             return
 
+        if self.going_home:
+            return
+
         if self._goal_handle:
             try:
                 self._goal_handle.cancel_goal_async()
-                self.get_logger().info("Cancelling current goal to GO HOME.")
             except:
                 pass
 
         self.going_home = True
+
+        self.get_logger().info(
+            ">>> FINISHING EXPLORATION: Saving Map & Pausing SLAM... <<<"
+        )
+        self.save_and_pause_slam()
+
         x, y, yaw = self.start_pose
         self.send_goal(x, y, yaw)
 
@@ -264,7 +305,6 @@ class FrontierExplorer(Node):
         info = grid.info
         data = grid.data
         w = info.width
-
         req_clearance = max(0, self.clearance - relax_level)
         occupancy_threshold = 70 if relax_level < 2 else 95
 
@@ -279,11 +319,9 @@ class FrontierExplorer(Node):
 
         best_cand = None
         best_score = 1e9
-
         for comp in frontiers:
             cx = sum(c[0] for c in comp) // len(comp)
             cy = sum(c[1] for c in comp) // len(comp)
-
             if not check_clear(cx, cy):
                 valid_points = [p for p in comp if check_clear(p[0], p[1])]
                 if not valid_points:
@@ -291,22 +329,26 @@ class FrontierExplorer(Node):
                 cx, cy = min(
                     valid_points, key=lambda p: (p[0] - rx) ** 2 + (p[1] - ry) ** 2
                 )
-
             if self.is_blacklisted(cx, cy, grid):
                 continue
             if (cx, cy) in self.sent_goals_cells:
                 continue
-
             mx, my = map_to_world(cx, cy, info)
             dist = math.hypot(mx - rx, my - ry)
             size = len(comp)
-
-            score = -dist if self.force_long_range else (dist - (size * 0.02))
-
+            if self.force_long_range:
+                score = -dist
+            else:
+                score = dist - (size * 0.05)
+            if self.current_target_grid:
+                curr_gx, curr_gy = self.current_target_grid
+                dx_g = abs(cx - curr_gx)
+                dy_g = abs(cy - curr_gy)
+                if dx_g < 20 and dy_g < 20:
+                    score -= 2.0
             if score < best_score:
                 best_score = score
                 best_cand = (mx, my, cx, cy)
-
         return best_cand
 
     def is_blacklisted(self, gx, gy, grid):
@@ -319,11 +361,13 @@ class FrontierExplorer(Node):
                 return True
         return False
 
-    # [수정] 재귀 깊이(recursion_depth) 파라미터 추가
     def plan_and_go(self, grid, use_relaxation=False, recursion_depth=0):
-        # [중요] 무한 재귀 방지 (5번 이상 반복 시 중단)
         if recursion_depth > 5:
-            self.get_logger().warn("Max recursion reached. Stopping plan_and_go loop.")
+            self.get_logger().warn("Max recursion reached.")
+            self.no_valid_goal_count += 1
+            if self.no_valid_goal_count >= 20:
+                self.get_logger().warn("Recursion limit hit 20+. RETURNING HOME.")
+                self.go_home()
             return
 
         if not self.nav_client.server_is_ready() or self.going_home:
@@ -334,16 +378,31 @@ class FrontierExplorer(Node):
 
         if not frontiers:
             self.get_logger().info("No frontiers found.")
+
+            # [추가 로직] 연속 5회 'No frontiers' 발생 시 처리
+            self.no_frontier_count += 1
+            if self.no_frontier_count >= 5:
+                if self.min_frontier > 4:
+                    self.get_logger().warn(">>> Lowering min_frontier_size to 4! <<<")
+                    self.min_frontier = 4
+                    self.no_frontier_count = 0  # 카운트 리셋 후 4로 다시 시도
+                else:
+                    # 이미 5인데도 5번 연속 못 찾았다면
+                    self.get_logger().warn(
+                        ">>> No frontiers left even with size 4. GOING HOME <<<"
+                    )
+                    self.go_home()
             return
+        else:
+            # 프론티어를 찾았다면 카운트 초기화
+            self.no_frontier_count = 0
 
         goal = self.choose_goal(
             frontiers, grid, relax_level=(2 if use_relaxation else 0)
         )
-
         if not goal:
             if not use_relaxation:
                 self.get_logger().info("Retry with relaxation...")
-                # 재귀 호출 시 depth 1 증가
                 self.plan_and_go(
                     grid, use_relaxation=True, recursion_depth=recursion_depth + 1
                 )
@@ -352,47 +411,31 @@ class FrontierExplorer(Node):
                     self.get_logger().warn("Resetting Blacklist & Retrying!")
                     self.blacklist_cells.clear()
                     self.sent_goals_cells.clear()
-                    # 재귀 호출 시 depth 1 증가
                     self.plan_and_go(
                         grid, use_relaxation=True, recursion_depth=recursion_depth + 1
                     )
                 else:
                     self.get_logger().warn("No valid goal found.")
-
                     self.no_valid_goal_count += 1
-                    self.get_logger().info(
-                        f"Goal Failure Count: {self.no_valid_goal_count}/20"
-                    )
-
                     if self.no_valid_goal_count >= 20:
-                        self.get_logger().warn(
-                            "Failed to find goal 20+ times. FORCE RETURNING HOME."
-                        )
+                        self.get_logger().warn("Failed 20+. RETURNING HOME.")
                         self.go_home()
                         return
-
                     if self.force_long_range:
                         self.force_long_range = False
             return
-
         mx, my, gx, gy = goal
-
-        # 성공하면 카운트 초기화
         self.no_valid_goal_count = 0
-
         if self.force_long_range:
-            self.get_logger().info(">>> ESCAPE MODE: Jumping to FAR frontier! <<<")
+            self.get_logger().info(">>> ESCAPE MODE <<<")
             self.force_long_range = False
-
         attempts = self.goal_attempts.get((gx, gy), 0)
         if attempts >= self.max_goal_attempts:
             self.blacklist_cells.add((gx, gy))
-            # 재귀 호출 시 depth 1 증가
             self.plan_and_go(
                 grid, use_relaxation=True, recursion_depth=recursion_depth + 1
             )
             return
-
         self.goal_attempts[(gx, gy)] = attempts + 1
         self.sent_goals_cells.add((gx, gy))
         self.current_target_grid = (gx, gy)
@@ -408,15 +451,13 @@ class FrontierExplorer(Node):
         qw = math.cos(yaw / 2.0)
         goal.pose.pose.orientation.z = qz
         goal.pose.pose.orientation.w = qw
-
         if self.going_home:
             self.get_logger().info(f"GOING HOME -> ({x:.2f}, {y:.2f})")
         else:
             self.get_logger().info(f"Going to ({x:.2f}, {y:.2f})")
-
+        self.path_update_count = 0
         self.current_goal_future = self.nav_client.send_goal_async(goal)
         self.current_goal_future.add_done_callback(self._goal_response)
-
         self.goal_start_time = self.get_clock().now()
 
     def _goal_response(self, fut):
@@ -435,13 +476,12 @@ class FrontierExplorer(Node):
         self.current_goal_future = None
         self._goal_handle = None
         self.current_target_grid = None
-
+        self.path_update_count = 0
         if self.going_home:
             if status == 4:
                 self.get_logger().info("Mission Complete (Arrived Home).")
             else:
                 self.get_logger().warn(f"Home return finished with status {status}.")
-
         elif self._last_map:
             self.plan_and_go(self._last_map)
 

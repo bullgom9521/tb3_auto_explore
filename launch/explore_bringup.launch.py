@@ -1,6 +1,12 @@
 import os
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+
+# [수정] ExecuteProcess 추가
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    ExecuteProcess,
+)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -12,7 +18,6 @@ def generate_launch_description():
     # === 1. Launch 인자 정의 ===
     use_sim_time = LaunchConfiguration("use_sim_time", default="true")
     slam = LaunchConfiguration("slam", default="true")
-    # [추가] RViz 실행 여부 (기본값 True)
     use_rviz = LaunchConfiguration("use_rviz", default="true")
 
     # 내 패키지 경로
@@ -23,8 +28,7 @@ def generate_launch_description():
 
     params_file = LaunchConfiguration("params_file")
 
-    # [추가] RViz 설정 파일 경로 (Nav2 기본 설정 사용)
-    # 만약 내 패키지에 커스텀 rviz 파일이 있다면 그 경로로 바꿔주면 됩니다.
+    # RViz 설정 파일 경로
     nav2_bringup_dir = get_package_share_directory("nav2_bringup")
     rviz_config_file = os.path.join(nav2_bringup_dir, "rviz", "nav2_default_view.rviz")
 
@@ -73,18 +77,25 @@ def generate_launch_description():
         ],
     )
 
-    # === 6. [추가] RViz2 노드 ===
+    # === 6. RViz2 노드 ===
     rviz_node = Node(
         package="rviz2",
         executable="rviz2",
         name="rviz2",
         output="screen",
-        arguments=["-d", rviz_config_file],  # 설정 파일 로드
-        condition=IfCondition(use_rviz),  # use_rviz가 True일 때만 실행
+        arguments=["-d", rviz_config_file],
+        condition=IfCondition(use_rviz),
         parameters=[{"use_sim_time": use_sim_time}],
     )
 
-    # === 7. LaunchDescription 구성 ===
+    # === 7. [추가] YOLO Image Topic 실행 ===
+    # 사용자가 제공한 경로: ~/tb3_auto_explore/yolo/image_topic.py
+    # 파이썬 스크립트를 직접 실행하기 위해 ExecuteProcess 사용
+    yolo_script_path = "/home/ho/tb3_auto_explore/yolo/image_topic.py"
+
+    yolo_node = ExecuteProcess(cmd=["python3", yolo_script_path], output="screen")
+
+    # === 8. LaunchDescription 구성 ===
     ld = LaunchDescription()
 
     ld.add_action(
@@ -95,14 +106,11 @@ def generate_launch_description():
     ld.add_action(
         DeclareLaunchArgument("slam", default_value="true", description="Run SLAM")
     )
-    # [추가] RViz 인자 선언
     ld.add_action(
         DeclareLaunchArgument(
             "use_rviz", default_value="true", description="Start RViz2 automatically"
         )
     )
-
-    # 파라미터 파일 인자
     ld.add_action(
         DeclareLaunchArgument(
             "params_file",
@@ -113,7 +121,10 @@ def generate_launch_description():
 
     ld.add_action(nav2_launch_include)
     ld.add_action(slam_toolbox_launch)
-    ld.add_action(rviz_node)  # RViz 추가
+    ld.add_action(rviz_node)
     ld.add_action(explorer)
+
+    # [추가] YOLO 노드 실행 추가
+    ld.add_action(yolo_node)
 
     return ld

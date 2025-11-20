@@ -2,29 +2,37 @@ slam_toolbox:
   ros__parameters:
     use_sim_time: true
 
-    # === 루프클로저 완화 ===
-    loop_search_maximum_distance: 1.5
-    loop_closure_threshold: 0.95
-    loop_search_space: "search_ring"
+    # ==========================================
+    # [속도 향상 핵심 1] 갱신 주기 단축
+    # ==========================================
+    # 기존: 0.3 (30cm 이동해야 갱신) -> 너무 느림
+    # 변경: 0.1 (10cm만 움직여도 갱신) -> 실시간처럼 느껴짐
+    minimum_travel_distance: 0.2
+    
+    # 기존: 0.3 (약 17도)
+    # 변경: 0.15 (약 8도만 돌어도 갱신)
+    minimum_travel_heading: 0.2
 
-    minimum_travel_distance: 0.05   # 5cm 이동 시 갱신
-    minimum_travel_heading: 0.05    # 3도 회전 시 갱신
+    # ==========================================
+    # [속도 향상 핵심 2] 지도 발행 빈도 (Visualization)
+    # ==========================================
+    # 이 값이 없거나 크면(5.0), 로봇은 아는데 RViz에는 늦게 뜹니다.
+    # 0.5초마다 지도를 쏘도록 설정합니다.
+    map_update_interval: 2.0
     
-    # ================================================
-    # 4. 기타 센서 설정
-    # ================================================
-    # 시뮬레이션에서 IMU가 종종 맵을 터뜨리므로 끄는 게 더 안정적일 때가 많음
-    use_imu: true
-    
+    # TF 변환(로봇 위치) 발행 주기 (0.02 = 50Hz)
+    transform_publish_period: 0.02
+
+    # ==========================================
+    # [기존 설정 유지] 맵 터짐 방지 & 센서 설정
+    # ==========================================
+    use_loop_closure: false  # 맵 터짐 방지 (필수 유지)
+
+    # 검색 범위 (오도메트리 신뢰)
+    correlation_search_space_dimension: 0.3
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.05
+
+    use_imu: false
     max_laser_range: 3.5
     resolution: 0.05
-    
-    # 오도메트리 오차가 커졌을 때 패널티를 세게 줌 (강제로 오도메트리 위치 고수)
-    distance_variance_penalty: 0.5  
-    angle_variance_penalty: 1.0    
-
-    # Scan Matcher 방식 설정 (Ceres Solver가 더 정밀하지만 무거움, 여기선 기본 사용)
-    solver_plugin: solver_plugins::CeresSolver
-    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
-    ceres_preconditioner: JACOBI
-    ceres_trust_strategy: LEVENBERG_MARQUARDT
