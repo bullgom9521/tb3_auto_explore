@@ -14,15 +14,11 @@ from ultralytics import YOLO
 # Define rectangular ROIs as (x1, y1, x2, y2)
 
 ROIS = [
-    (10, 510, 450, 710),  # ROI 0
-    (500, 510, 780, 710),  # ROI 1
-    (880, 510, 1270, 710),  # ROI 2
-    (10, 300, 450, 500),  # ROI 3
-    (500, 300, 780, 500),  # ROI 4
-    (880, 300, 1270, 500),  # ROI 5
-    (10, 10, 450, 290),  # ROI 6
-    (500, 10, 780, 290),  # ROI 7
-    (880, 10, 1270, 290),  # ROI 8
+    (10, 230, 410, 710),  # ROI 0
+    (470, 410, 810, 710),  # ROI 1
+    (880, 230, 1260, 710),  # ROI 2
+    (470, 230, 810, 400),  # ROI 3
+    (600, 10, 700, 220),  # ROI 4
 ]
 
 ROI_COLOR_DEFAULT = (255, 0, 0)  # Blue (BGR)
@@ -68,19 +64,8 @@ class ImageViewer(Node):
             msg.height, msg.width, 3
         )  # encoding = rgb8 기준
 
-        # OpenCV는 BGR을 쓰므로 변환 (원하면 생략 가능)
+        # OpenCV는 BGR을 쓰므로 변환
         img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-
-        # (선택) 카메라 해상도 확인 (ROI 해상도랑 맞는지)
-        # self.get_logger().info(f"h={msg.height}, w={msg.width}")
-
-        # results = self.model(img_bgr, verbose=False)
-        # annotated = results[0].plot()
-
-        # # cv2.imshow("IsaacSim RGB", img_bgr) # 이건 그냥 rgb 토픽의 image데이터 시각화해서 보여주는거
-        # # cv2.waitKey(1)
-        # cv2.imshow("YOLO on IsaacSim RGB", annotated) # 이건 yolo가 인식한거 보여주는거..
-        # cv2.waitKey(1)
 
         # 3) YOLO 추론
         results = self.model(img_bgr, verbose=False)
@@ -89,8 +74,21 @@ class ImageViewer(Node):
         # 4) ROI 트리거 체크 배열
         roi_triggered = [False] * len(ROIS)
 
-        # 5) 각 detection box에 대해 ROI와 IoU 계산
+        # 5) 각 detection box에 대해 처리
         for box in r.boxes:
+            # -------------------------------------------------------
+            # ### [추가됨] 물체 이름 및 정확도 터미널 출력
+            # -------------------------------------------------------
+            cls_id = int(box.cls[0])  # 클래스 ID (숫자)
+            class_name = self.model.names[
+                cls_id
+            ]  # 클래스 이름 (문자열, 예: green-cube)
+            conf = float(box.conf[0])  # 정확도 (0.0 ~ 1.0)
+
+            # 터미널 로그 출력 (흰색 로그)
+            self.get_logger().info(f"Detected: {class_name} (conf: {conf:.2f})")
+            # -------------------------------------------------------
+
             coords_tensor = box.xyxy
             coords_list = coords_tensor.tolist()[0]
             x1, y1, x2, y2 = map(int, coords_list)
@@ -101,7 +99,7 @@ class ImageViewer(Node):
                     roi_triggered[i] = True
 
         # 6) YOLO가 그린 기본 bbox 들어간 이미지
-        annotated = r.plot()  # 이게 BGR 이미지
+        annotated = r.plot()
 
         # 7) ROI 박스도 같이 그리기
         for i, roi in enumerate(ROIS):
@@ -124,6 +122,7 @@ class ImageViewer(Node):
             i for i, triggered in enumerate(roi_triggered) if triggered
         ]
         if triggered_indices:
+            # ROI 트리거 정보도 같이 보고 싶으면 주석 유지
             self.get_logger().info(f"ROI triggered: {triggered_indices}")
 
         # 8) 화면 출력
