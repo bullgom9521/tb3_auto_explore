@@ -2,31 +2,44 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
+from std_msgs.msg import Bool
+from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 import numpy as np
 import cv2
+import time
 from rclpy.qos import qos_profile_sensor_data
 from ultralytics import YOLO
 
-# -----------------------------
-# 1. ROI 설정 및 IoU 함수
-# -----------------------------
+# ==========================================
+# [사용자 설정] 속도 파라미터
+# ==========================================
+SPEED_ROI_1 = 0.03  # 전진 (느림)
+SPEED_ROI_3 = 0.12  # 전진 (빠름)
+SPEED_ANGULAR = 0.261  # 회전 (약 15도/초)
 
-# Define rectangular ROIs as (x1, y1, x2, y2)
+# [후진 관련 설정]
+BACKUP_SPEED = -0.1  # 후진 속도 (m/s)
+BACKUP_DISTANCE = 0.2  # 후진 거리 (m)
+BACKUP_DURATION = abs(BACKUP_DISTANCE / BACKUP_SPEED)
 
+# ==========================================
+# 1. ROI 설정 (순서 중요)
+# ==========================================
 ROIS = [
-    (10, 230, 410, 710),  # ROI 0
-    (470, 410, 810, 710),  # ROI 1
-    (880, 230, 1260, 710),  # ROI 2
-    (470, 230, 810, 400),  # ROI 3
-    (600, 10, 700, 220),  # ROI 4
+    (10, 410, 410, 710),  # ROI 0 (Left) -> 제자리 좌회전
+    (470, 410, 810, 710),  # ROI 1 (Bottom Center) -> 전진 (느림) ★ 필수 조건
+    (880, 410, 1260, 710),  # ROI 2 (Right) -> 제자리 우회전
+    (470, 200, 810, 400),  # ROI 3 (Middle Center) -> 전진 (빠름)
+    (10, 200, 410, 400),  # ROI 4 (Middle Left) -> 전진(1) + 좌회전(0)
+    (880, 200, 1260, 400),  # ROI 5 (Middle Right) -> 전진(1) + 우회전(2)
 ]
 
-ROI_COLOR_DEFAULT = (255, 0, 0)  # Blue (BGR)
-ROI_COLOR_TRIGGERED = (0, 255, 255)  # Yellow-ish
+ROI_COLOR_DEFAULT = (255, 0, 0)
+ROI_COLOR_TRIGGERED = (0, 255, 255)
 
 
 def rect_iou(a, b):
-    # a,b are (x1,y1,x2,y2)
     ax1, ay1, ax2, ay2 = a
     bx1, by1, bx2, by2 = b
     inter_x1 = max(ax1, bx1)
@@ -38,105 +51,272 @@ def rect_iou(a, b):
     inter = inter_w * inter_h
     area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
     area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
-    union = area_a + area_b - inter if (area_a + area_b - inter) > 0 else 1e-6
-    return inter / union
-
-
-# -----------------------------
-# 2. ROS2 노드 정의
-# -----------------------------
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
 
 
 class ImageViewer(Node):
     def __init__(self):
         super().__init__("image_viewer")
-
         self.model = YOLO("/home/ho/tb3_auto_explore/yolo/YOLOCUBE_ClassModified.pt")
 
         self.sub = self.create_subscription(
             Image, "/rgb", self.callback, qos_profile_sensor_data
         )
-        self.get_logger().info("Image viewer started.")
+        self.odom_sub = self.create_subscription(
+            Odometry, "/odom", self.odom_callback, 10
+        )
+
+        self.stop_pub = self.create_publisher(Bool, "/emergency_stop", 10)
+        self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+
+        # ==========================================
+        # [상태 변수들]
+        # ==========================================
+        self.current_pose = None
+        self.target_classes = ["red-cube", "blue-cube", "green-cube", "yellow-cube"]
+        self.found_locations = {}
+        self.locked_target = None
+
+        self.detect_counter = 0
+        self.potential_target = None
+
+        # ROI 1 도달 확인용 플래그
+        self.has_reached_roi1 = False
+
+        # 후진 상태 관리
+        self.is_backing_up = False
+        self.backup_start_time = 0.0
+
+        self.get_logger().info(
+            "Mission Started: Find (Stable x3) -> Check ROI 1 -> Save -> Backup -> Resume."
+        )
+
+    def odom_callback(self, msg: Odometry):
+        self.current_pose = (msg.pose.pose.position.x, msg.pose.pose.position.y)
 
     def callback(self, msg: Image):
-        # msg.data → numpy 이미지 변환
-        img = np.frombuffer(msg.data, dtype=np.uint8).reshape(
-            msg.height, msg.width, 3
-        )  # encoding = rgb8 기준
-
-        # OpenCV는 BGR을 쓰므로 변환
+        img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
         img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-
-        # 3) YOLO 추론
         results = self.model(img_bgr, verbose=False)
         r = results[0]
 
-        # 4) ROI 트리거 체크 배열
+        # ----------------------------------------------------
+        # [Priority 0] 후진(Backing Up) 상태 처리
+        # ----------------------------------------------------
+        if self.is_backing_up:
+            elapsed_time = time.time() - self.backup_start_time
+            if elapsed_time < BACKUP_DURATION:
+                twist = Twist()
+                twist.linear.x = BACKUP_SPEED
+                self.cmd_vel_pub.publish(twist)
+                cv2.putText(
+                    img_bgr,
+                    f"BACKING UP... {elapsed_time:.1f}s",
+                    (50, 300),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 0, 255),
+                    3,
+                )
+                cv2.imshow("YOLO Multi-ROI Controller", img_bgr)
+                cv2.waitKey(1)
+                return
+            else:
+                self.get_logger().warn(">>> BACKUP COMPLETE. Resuming Exploration. <<<")
+                self.cmd_vel_pub.publish(Twist())
+                self.stop_pub.publish(Bool(data=False))
+                self.is_backing_up = False
+                self.locked_target = None
+                return
+
+        # ----------------------------------------------------
+        # 1. 현재 프레임 타겟 분석
+        # ----------------------------------------------------
         roi_triggered = [False] * len(ROIS)
+        detected_targets_in_roi = []
 
-        # 5) 각 detection box에 대해 처리
         for box in r.boxes:
-            # -------------------------------------------------------
-            # ### [추가됨] 물체 이름 및 정확도 터미널 출력
-            # -------------------------------------------------------
-            cls_id = int(box.cls[0])  # 클래스 ID (숫자)
-            class_name = self.model.names[
-                cls_id
-            ]  # 클래스 이름 (문자열, 예: green-cube)
-            conf = float(box.conf[0])  # 정확도 (0.0 ~ 1.0)
+            cls_id = int(box.cls[0])
+            class_name = self.model.names[cls_id]
 
-            # 터미널 로그 출력 (흰색 로그)
-            self.get_logger().info(f"Detected: {class_name} (conf: {conf:.2f})")
-            # -------------------------------------------------------
+            if class_name not in self.target_classes:
+                continue
 
-            coords_tensor = box.xyxy
-            coords_list = coords_tensor.tolist()[0]
-            x1, y1, x2, y2 = map(int, coords_list)
+            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
             det_rect = (x1, y1, x2, y2)
 
+            in_roi = False
             for i, roi in enumerate(ROIS):
                 if rect_iou(det_rect, roi) > 0:
                     roi_triggered[i] = True
+                    in_roi = True
 
-        # 6) YOLO가 그린 기본 bbox 들어간 이미지
+            if in_roi:
+                detected_targets_in_roi.append(class_name)
+
+        # ----------------------------------------------------
+        # 2. 상태 머신 (State Machine)
+        # ----------------------------------------------------
+
+        # [상태 A] 탐색 모드
+        if self.locked_target is None:
+            if len(detected_targets_in_roi) > 0:
+                target = detected_targets_in_roi[0]
+                if target == self.potential_target:
+                    self.detect_counter += 1
+                else:
+                    self.potential_target = target
+                    self.detect_counter = 1
+
+                # ★★★ [수정됨] 3회 연속 감지 시 락온 ★★★
+                if self.detect_counter >= 3:
+                    self.locked_target = target
+
+                    # 락온 시 ROI 1 도달 여부 초기화
+                    self.has_reached_roi1 = False
+
+                    self.stop_pub.publish(Bool(data=True))
+                    self.get_logger().warn(
+                        f">>> FOUND {target} (Stable x3)! Locking on & Pausing Exploration."
+                    )
+                    self.detect_counter = 0
+                    self.potential_target = None
+            else:
+                self.detect_counter = 0
+                self.potential_target = None
+
+        # [상태 B] 제어 모드
+        else:
+            target = self.locked_target
+
+            if target in detected_targets_in_roi:
+                # ROI 1 도달 체크
+                if roi_triggered[1]:
+                    self.has_reached_roi1 = True
+
+                twist = Twist()
+
+                # ROI 우선순위 동작 로직
+                if roi_triggered[4]:  # ROI 4
+                    twist.linear.x = SPEED_ROI_1
+                    twist.angular.z = SPEED_ANGULAR
+
+                elif roi_triggered[5]:  # ROI 5
+                    twist.linear.x = SPEED_ROI_1
+                    twist.angular.z = -SPEED_ANGULAR
+
+                elif roi_triggered[0]:  # ROI 0
+                    twist.angular.z = SPEED_ANGULAR
+
+                elif roi_triggered[2]:  # ROI 2
+                    twist.angular.z = -SPEED_ANGULAR
+
+                elif roi_triggered[1]:  # ROI 1
+                    twist.linear.x = SPEED_ROI_1
+
+                elif roi_triggered[3]:  # ROI 3
+                    twist.linear.x = SPEED_ROI_3
+
+                else:
+                    twist.linear.x = 0.0
+
+                self.cmd_vel_pub.publish(twist)
+
+            else:
+                # 타겟 소실 (Lost) -> 조건 검사 (ROI 1 도달했었나?)
+                if self.has_reached_roi1:
+                    self.get_logger().warn(
+                        f"<<< {target} FINISHED (ROI 1 Verified). Saving. >>>"
+                    )
+
+                    if self.current_pose:
+                        save_key = f"{target}_lo"
+                        self.found_locations[save_key] = self.current_pose
+                        self.get_logger().error(
+                            f"★ SAVED: {save_key} = {self.current_pose}"
+                        )
+
+                    if target in self.target_classes:
+                        self.target_classes.remove(target)
+                        self.get_logger().info(f"Remaining: {self.target_classes}")
+
+                    # 성공 -> 후진
+                    self.is_backing_up = True
+                    self.backup_start_time = time.time()
+                    self.cmd_vel_pub.publish(Twist())
+
+                else:
+                    # 실패 -> 무시하고 탐색 재개
+                    self.get_logger().error(
+                        f"XXX {target} LOST without reaching ROI 1. IGNORED. XXX"
+                    )
+
+                    self.stop_pub.publish(Bool(data=False))
+                    self.cmd_vel_pub.publish(Twist())
+                    self.locked_target = None
+
+        # ----------------------------------------------------
+        # 화면 그리기
+        # ----------------------------------------------------
         annotated = r.plot()
 
-        # 7) ROI 박스도 같이 그리기
+        if self.locked_target:
+            status_text = "VERIFIED" if self.has_reached_roi1 else "APPROACHING..."
+            color = (0, 255, 0) if self.has_reached_roi1 else (0, 0, 255)
+            cv2.putText(
+                annotated,
+                f"LOCKED: {self.locked_target} [{status_text}]",
+                (10, 50),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                color,
+                2,
+            )
+
+        elif self.potential_target:
+            # 카운터 3으로 표시
+            cv2.putText(
+                annotated,
+                f"Detecting {self.potential_target}: {self.detect_counter}/3",
+                (10, 50),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 255),
+                2,
+            )
+
         for i, roi in enumerate(ROIS):
-            x1, y1, x2, y2 = roi
+            rx1, ry1, rx2, ry2 = roi
             color = ROI_COLOR_TRIGGERED if roi_triggered[i] else ROI_COLOR_DEFAULT
-            cv2.rectangle(annotated, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
-            label = f"ROI {i} {'TRIGGER' if roi_triggered[i] else ''}"
+            cv2.rectangle(annotated, (rx1, ry1), (rx2, ry2), color, 2)
+            label = f"ROI {i}"
             cv2.putText(
                 annotated,
                 label,
-                (int(x1), int(y1) - 8),
+                (rx1, ry1 - 8),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
                 color,
                 2,
             )
 
-        # (선택) 터미널에 어떤 ROI가 트리거됐는지 출력
-        triggered_indices = [
-            i for i, triggered in enumerate(roi_triggered) if triggered
-        ]
-        if triggered_indices:
-            # ROI 트리거 정보도 같이 보고 싶으면 주석 유지
-            self.get_logger().info(f"ROI triggered: {triggered_indices}")
-
-        # 8) 화면 출력
-        cv2.imshow("YOLO Multi-ROI on IsaacSim RGB", annotated)
+        cv2.imshow("YOLO Multi-ROI Controller", annotated)
         cv2.waitKey(1)
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = ImageViewer()
-    rclpy.spin(node)
-    node.destroy_node()
-    cv2.destroyAllWindows()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.cmd_vel_pub.publish(Twist())
+        node.destroy_node()
+        cv2.destroyAllWindows()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":

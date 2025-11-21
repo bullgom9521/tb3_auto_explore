@@ -11,18 +11,17 @@ from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from rclpy.action import ActionClient
+from std_msgs.msg import Bool
 
 from geometry_msgs.msg import PoseStamped, Point
 from nav_msgs.msg import OccupancyGrid, Path
 from nav2_msgs.action import NavigateToPose
 from rosgraph_msgs.msg import Clock
-
-# 서비스 호출을 위한 임포트
 from slam_toolbox.srv import SaveMap, Pause
-
 from tf2_ros import Buffer, TransformListener
 
 
+# ... (idx, map_to_world 함수는 그대로 유지) ...
 def idx(x: int, y: int, width: int) -> int:
     return y * width + x
 
@@ -40,27 +39,21 @@ class FrontierExplorer(Node):
     def __init__(self) -> None:
         super().__init__("frontier_explorer")
 
-        # ===== Parameters =====
+        # ... (파라미터 설정 부분 그대로 유지) ...
         self.declare_parameter("map_topic", "/map")
         self.declare_parameter("global_frame", "map")
         self.declare_parameter("robot_base_frame", "base_link")
-        self.declare_parameter("min_frontier_size", 5)  # 기본값 7
+        self.declare_parameter("min_frontier_size", 3)
         self.declare_parameter("goal_clearance_cells", 1)
         self.declare_parameter("goal_timeout_sec", 30.0)
         self.declare_parameter("blacklist_clear_radius", 0.5)
         self.declare_parameter("max_goal_attempts_per_frontier", 2)
-
-        # 맵 저장 이름 파라미터
         self.declare_parameter("map_name", "my_map")
 
-        # Read Params
         self.map_topic = self.get_parameter("map_topic").value
         self.global_frame = self.get_parameter("global_frame").value
         self.base_frame = self.get_parameter("robot_base_frame").value
-
-        # [변수] 파라미터 값을 변수로 저장 (동적 변경을 위해)
         self.min_frontier = self.get_parameter("min_frontier_size").value
-
         self.clearance = self.get_parameter("goal_clearance_cells").value
         self.goal_timeout_sec = self.get_parameter("goal_timeout_sec").value
         self.blacklist_clear_radius_m = self.get_parameter(
@@ -71,7 +64,6 @@ class FrontierExplorer(Node):
         ).value
         self.map_name_val = self.get_parameter("map_name").value
 
-        # ===== Subscriptions & Action Client =====
         qos = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -83,50 +75,81 @@ class FrontierExplorer(Node):
         self.clock_sub = self.create_subscription(Clock, "/clock", self.on_clock, 10)
         self.plan_sub = self.create_subscription(Path, "/plan", self.on_plan, 10)
 
+        # 정지 신호 구독
+        self.create_subscription(Bool, "/emergency_stop", self.stop_signal_callback, 10)
+
+        # 상태 플래그: True면 탐색 일시 정지
+        self.is_paused = False
+
         self.buffer = Buffer()
         self.tf_listener = TransformListener(self.buffer, self)
         self.nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
-
-        # SLAM Toolbox 제어 클라이언트
         self.save_map_client = self.create_client(SaveMap, "/slam_toolbox/save_map")
         self.pause_slam_client = self.create_client(
             Pause, "/slam_toolbox/pause_new_measurements"
         )
 
-        # ===== State =====
+        # ... (나머지 상태 변수 그대로 유지) ...
         self._have_map = False
         self._last_map: Optional[OccupancyGrid] = None
         self._last_map_time = self.get_clock().now()
-
         self.current_goal_future = None
         self.result_future = None
         self._goal_handle = None
-
         self.current_target_grid: Optional[Tuple[int, int]] = None
         self.goal_start_time = None
-
         self.force_long_range = False
         self.path_update_count = 0
         self.no_valid_goal_count = 0
-
-        # [추가] 'No frontiers found' 연속 횟수 카운트
         self.no_frontier_count = 0
-
         self.sent_goals_cells: Set[Tuple[int, int]] = set()
         self.goal_attempts: Dict[Tuple[int, int], int] = {}
         self.blacklist_cells: Set[Tuple[int, int]] = set()
-
         self.start_pose = None
         self.going_home = False
         self.start_time_sec = None
         self.time_limit_sec = 240.0
 
         self.timer = self.create_timer(1.0, self.watchdog_cb)
-        self.get_logger().info(
-            f"Explorer Started. [Auto-Save & Return] Limit: {self.time_limit_sec}s"
-        )
+        self.get_logger().info(f"Explorer Started. Limit: {self.time_limit_sec}s")
+
+    # ---------------------------------------------------------
+    # [핵심 수정] 정지/재개 로직 처리
+    # ---------------------------------------------------------
+    def stop_signal_callback(self, msg: Bool):
+        # True 신호 수신: "일시 정지"
+        if msg.data:
+            if not self.is_paused:
+                self.is_paused = True
+                self.get_logger().warn(
+                    ">> PAUSE SIGNAL RECEIVED. Cancelling Goal & Pausing Explorer. <<"
+                )
+
+                # 현재 이동 중인 골이 있다면 즉시 취소
+                if self._goal_handle:
+                    try:
+                        self._goal_handle.cancel_goal_async()
+                    except:
+                        pass
+                self.current_goal_future = None
+                self._goal_handle = None
+
+        # False 신호 수신: "재개"
+        else:
+            if self.is_paused:
+                self.is_paused = False
+                self.get_logger().info(
+                    ">> RESUME SIGNAL RECEIVED. Restarting Exploration. <<"
+                )
+                # 맵이 있다면 즉시 다시 탐색 시작
+                if self._last_map:
+                    self.plan_and_go(self._last_map)
 
     def on_map(self, grid: OccupancyGrid) -> None:
+        # 일시 정지 상태면 맵이 들어와도 무시
+        if self.is_paused:
+            return
+
         self._have_map = True
         self._last_map = grid
         self._last_map_time = self.get_clock().now()
@@ -159,6 +182,10 @@ class FrontierExplorer(Node):
                 self._goal_handle = None
 
     def on_clock(self, msg: Clock) -> None:
+        # 일시 정지 상태면 시간 체크도 무시 (또는 시간은 흐르게 두되 복귀는 안 시킴)
+        if self.is_paused:
+            return
+
         now_sec = msg.clock.sec + msg.clock.nanosec * 1e-9
         if self.start_time_sec is None:
             self.start_time_sec = now_sec
@@ -171,6 +198,10 @@ class FrontierExplorer(Node):
             self.go_home()
 
     def watchdog_cb(self) -> None:
+        # 일시 정지 상태면 왓치독 무시
+        if self.is_paused:
+            return
+
         now = self.get_clock().now()
         if self._have_map and self.current_goal_future is None and not self.going_home:
             delta = (now - self._last_map_time).nanoseconds * 1e-9
@@ -195,6 +226,7 @@ class FrontierExplorer(Node):
                 self.current_goal_future = None
                 self._goal_handle = None
 
+    # ... (나머지 함수들은 기존과 완전히 동일, 생략 없음) ...
     def get_robot_pose(self):
         try:
             tf = self.buffer.lookup_transform(
@@ -213,7 +245,6 @@ class FrontierExplorer(Node):
             return None
 
     def save_and_pause_slam(self):
-        # 1. 맵 저장
         if self.save_map_client.wait_for_service(timeout_sec=1.0):
             req = SaveMap.Request()
             req.name.data = self.map_name_val
@@ -221,8 +252,6 @@ class FrontierExplorer(Node):
             self.get_logger().info(f"Requesting Map Save: {self.map_name_val}")
         else:
             self.get_logger().warn("SaveMap service not available!")
-
-        # 2. 매핑 일시정지
         if self.pause_slam_client.wait_for_service(timeout_sec=1.0):
             req = Pause.Request()
             self.pause_slam_client.call_async(req)
@@ -234,23 +263,18 @@ class FrontierExplorer(Node):
         if not self.start_pose:
             self.get_logger().error("Cannot go home: Start pose not saved yet.")
             return
-
         if self.going_home:
             return
-
         if self._goal_handle:
             try:
                 self._goal_handle.cancel_goal_async()
             except:
                 pass
-
         self.going_home = True
-
         self.get_logger().info(
             ">>> FINISHING EXPLORATION: Saving Map & Pausing SLAM... <<<"
         )
         self.save_and_pause_slam()
-
         x, y, yaw = self.start_pose
         self.send_goal(x, y, yaw)
 
@@ -362,6 +386,9 @@ class FrontierExplorer(Node):
         return False
 
     def plan_and_go(self, grid, use_relaxation=False, recursion_depth=0):
+        if self.is_paused:  # Paused Check
+            return
+
         if recursion_depth > 5:
             self.get_logger().warn("Max recursion reached.")
             self.no_valid_goal_count += 1
@@ -378,23 +405,19 @@ class FrontierExplorer(Node):
 
         if not frontiers:
             self.get_logger().info("No frontiers found.")
-
-            # [추가 로직] 연속 5회 'No frontiers' 발생 시 처리
             self.no_frontier_count += 1
             if self.no_frontier_count >= 5:
-                if self.min_frontier > 4:
-                    self.get_logger().warn(">>> Lowering min_frontier_size to 4! <<<")
-                    self.min_frontier = 4
-                    self.no_frontier_count = 0  # 카운트 리셋 후 4로 다시 시도
+                if self.min_frontier > 2:
+                    self.get_logger().warn(">>> Lowering min_frontier_size to 2! <<<")
+                    self.min_frontier = 2
+                    self.no_frontier_count = 0
                 else:
-                    # 이미 5인데도 5번 연속 못 찾았다면
                     self.get_logger().warn(
-                        ">>> No frontiers left even with size 4. GOING HOME <<<"
+                        ">>> No frontiers left even with size 2. GOING HOME <<<"
                     )
                     self.go_home()
             return
         else:
-            # 프론티어를 찾았다면 카운트 초기화
             self.no_frontier_count = 0
 
         goal = self.choose_goal(
@@ -471,6 +494,9 @@ class FrontierExplorer(Node):
         self.result_future.add_done_callback(self._goal_result)
 
     def _goal_result(self, fut):
+        # 정지상태면 결과 처리 무시
+        if self.is_paused:
+            return
         status = fut.result().status
         self.get_logger().info(f"Goal finished: {status}")
         self.current_goal_future = None
