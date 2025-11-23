@@ -3,6 +3,10 @@
 
 import math
 import time
+import os
+import yaml
+import cv2
+import numpy as np
 from typing import List, Tuple, Optional, Dict, Set
 from collections import deque
 
@@ -16,12 +20,12 @@ from std_msgs.msg import Bool
 from geometry_msgs.msg import PoseStamped, Point
 from nav_msgs.msg import OccupancyGrid, Path
 from nav2_msgs.action import NavigateToPose
+from nav2_msgs.srv import ClearEntireCostmap
 from rosgraph_msgs.msg import Clock
 from slam_toolbox.srv import SaveMap, Pause
 from tf2_ros import Buffer, TransformListener
 
 
-# ... (idx, map_to_world 함수는 그대로 유지) ...
 def idx(x: int, y: int, width: int) -> int:
     return y * width + x
 
@@ -39,7 +43,6 @@ class FrontierExplorer(Node):
     def __init__(self) -> None:
         super().__init__("frontier_explorer")
 
-        # ... (파라미터 설정 부분 그대로 유지) ...
         self.declare_parameter("map_topic", "/map")
         self.declare_parameter("global_frame", "map")
         self.declare_parameter("robot_base_frame", "base_link")
@@ -48,7 +51,17 @@ class FrontierExplorer(Node):
         self.declare_parameter("goal_timeout_sec", 30.0)
         self.declare_parameter("blacklist_clear_radius", 0.5)
         self.declare_parameter("max_goal_attempts_per_frontier", 2)
-        self.declare_parameter("map_name", "my_map")
+
+        # [설정] 맵 저장 경로
+        self.save_dir = "/home/ho/tb3_auto_explore/map"
+        self.map_name_base = "mission_map"
+        self.full_map_path = os.path.join(self.save_dir, self.map_name_base)
+
+        # 큐브 좌표 파일 경로
+        self.cube_log_path = "/home/ho/tb3_auto_explore/found_cubes.txt"
+
+        # [추가] CSV 저장 경로
+        self.csv_output_path = os.path.join(self.save_dir, "found_cubes.csv")
 
         self.map_topic = self.get_parameter("map_topic").value
         self.global_frame = self.get_parameter("global_frame").value
@@ -62,7 +75,6 @@ class FrontierExplorer(Node):
         self.max_goal_attempts = self.get_parameter(
             "max_goal_attempts_per_frontier"
         ).value
-        self.map_name_val = self.get_parameter("map_name").value
 
         qos = QoSProfile(
             depth=1,
@@ -74,11 +86,8 @@ class FrontierExplorer(Node):
         )
         self.clock_sub = self.create_subscription(Clock, "/clock", self.on_clock, 10)
         self.plan_sub = self.create_subscription(Path, "/plan", self.on_plan, 10)
-
-        # 정지 신호 구독
         self.create_subscription(Bool, "/emergency_stop", self.stop_signal_callback, 10)
 
-        # 상태 플래그: True면 탐색 일시 정지
         self.is_paused = False
 
         self.buffer = Buffer()
@@ -89,7 +98,13 @@ class FrontierExplorer(Node):
             Pause, "/slam_toolbox/pause_new_measurements"
         )
 
-        # ... (나머지 상태 변수 그대로 유지) ...
+        self.clear_global_costmap_client = self.create_client(
+            ClearEntireCostmap, "/global_costmap/clear_entirely_global_costmap"
+        )
+        self.clear_local_costmap_client = self.create_client(
+            ClearEntireCostmap, "/local_costmap/clear_entirely_local_costmap"
+        )
+
         self._have_map = False
         self._last_map: Optional[OccupancyGrid] = None
         self._last_map_time = self.get_clock().now()
@@ -110,22 +125,30 @@ class FrontierExplorer(Node):
         self.start_time_sec = None
         self.time_limit_sec = 240.0
 
-        self.timer = self.create_timer(1.0, self.watchdog_cb)
-        self.get_logger().info(f"Explorer Started. Limit: {self.time_limit_sec}s")
+        if not os.path.exists(self.save_dir):
+            os.makedirs(self.save_dir)
 
-    # ---------------------------------------------------------
-    # [핵심 수정] 정지/재개 로직 처리
-    # ---------------------------------------------------------
+        self.timer = self.create_timer(1.0, self.watchdog_cb)
+        self.get_logger().info(f"Explorer Started. Output Dir: {self.save_dir}")
+
+    def clear_costmaps(self):
+        self.get_logger().warn("!!! CLEARING COSTMAPS TO FIX PATH PLANNING !!!")
+        if self.clear_global_costmap_client.service_is_ready():
+            req = ClearEntireCostmap.Request()
+            self.clear_global_costmap_client.call_async(req)
+
+        if self.clear_local_costmap_client.service_is_ready():
+            req = ClearEntireCostmap.Request()
+            self.clear_local_costmap_client.call_async(req)
+
     def stop_signal_callback(self, msg: Bool):
-        # True 신호 수신: "일시 정지"
+        if self.going_home:
+            return
+
         if msg.data:
             if not self.is_paused:
                 self.is_paused = True
-                self.get_logger().warn(
-                    ">> PAUSE SIGNAL RECEIVED. Cancelling Goal & Pausing Explorer. <<"
-                )
-
-                # 현재 이동 중인 골이 있다면 즉시 취소
+                self.get_logger().warn(">> PAUSE SIGNAL RECEIVED. Cancelling Goal. <<")
                 if self._goal_handle:
                     try:
                         self._goal_handle.cancel_goal_async()
@@ -133,23 +156,16 @@ class FrontierExplorer(Node):
                         pass
                 self.current_goal_future = None
                 self._goal_handle = None
-
-        # False 신호 수신: "재개"
         else:
             if self.is_paused:
                 self.is_paused = False
-                self.get_logger().info(
-                    ">> RESUME SIGNAL RECEIVED. Restarting Exploration. <<"
-                )
-                # 맵이 있다면 즉시 다시 탐색 시작
+                self.get_logger().info(">> RESUME SIGNAL RECEIVED. <<")
                 if self._last_map:
                     self.plan_and_go(self._last_map)
 
     def on_map(self, grid: OccupancyGrid) -> None:
-        # 일시 정지 상태면 맵이 들어와도 무시
         if self.is_paused:
             return
-
         self._have_map = True
         self._last_map = grid
         self._last_map_time = self.get_clock().now()
@@ -164,7 +180,10 @@ class FrontierExplorer(Node):
             self.plan_and_go(grid)
 
     def on_plan(self, msg: Path) -> None:
-        if self._goal_handle is not None and not self.going_home:
+        if self.going_home:
+            return
+
+        if self._goal_handle is not None:
             self.path_update_count += 1
             if self.path_update_count >= 15:
                 self.get_logger().warn(
@@ -182,10 +201,8 @@ class FrontierExplorer(Node):
                 self._goal_handle = None
 
     def on_clock(self, msg: Clock) -> None:
-        # 일시 정지 상태면 시간 체크도 무시 (또는 시간은 흐르게 두되 복귀는 안 시킴)
         if self.is_paused:
             return
-
         now_sec = msg.clock.sec + msg.clock.nanosec * 1e-9
         if self.start_time_sec is None:
             self.start_time_sec = now_sec
@@ -198,21 +215,17 @@ class FrontierExplorer(Node):
             self.go_home()
 
     def watchdog_cb(self) -> None:
-        # 일시 정지 상태면 왓치독 무시
         if self.is_paused:
+            return
+        if self.going_home:
             return
 
         now = self.get_clock().now()
-        if self._have_map and self.current_goal_future is None and not self.going_home:
+        if self._have_map and self.current_goal_future is None:
             delta = (now - self._last_map_time).nanoseconds * 1e-9
             if delta > 5.0:
                 self.plan_and_go(self._last_map, use_relaxation=True)
-
-        if (
-            self._goal_handle is not None
-            and self.goal_start_time is not None
-            and not self.going_home
-        ):
+        if self._goal_handle is not None and self.goal_start_time is not None:
             delta = (now - self.goal_start_time).nanoseconds * 1e-9
             if delta > self.goal_timeout_sec:
                 self.get_logger().warn(f"[Watchdog] Timeout ({delta:.1f}s).")
@@ -226,7 +239,6 @@ class FrontierExplorer(Node):
                 self.current_goal_future = None
                 self._goal_handle = None
 
-    # ... (나머지 함수들은 기존과 완전히 동일, 생략 없음) ...
     def get_robot_pose(self):
         try:
             tf = self.buffer.lookup_transform(
@@ -245,42 +257,177 @@ class FrontierExplorer(Node):
             return None
 
     def save_and_pause_slam(self):
-        if self.save_map_client.wait_for_service(timeout_sec=1.0):
-            req = SaveMap.Request()
-            req.name.data = self.map_name_val
-            future = self.save_map_client.call_async(req)
-            self.get_logger().info(f"Requesting Map Save: {self.map_name_val}")
-        else:
-            self.get_logger().warn("SaveMap service not available!")
         if self.pause_slam_client.wait_for_service(timeout_sec=1.0):
             req = Pause.Request()
             self.pause_slam_client.call_async(req)
-            self.get_logger().info("Requesting SLAM Pause (Stop Mapping)")
+            self.get_logger().info("Requesting SLAM Pause...")
+
+        if self.save_map_client.wait_for_service(timeout_sec=1.0):
+            req = SaveMap.Request()
+            req.name.data = self.full_map_path
+            future = self.save_map_client.call_async(req)
+            self.get_logger().info(f"Requesting Map Save to: {self.full_map_path}")
+            future.add_done_callback(self.on_map_save_complete)
         else:
-            self.get_logger().warn("Pause SLAM service not available!")
+            self.get_logger().warn("SaveMap service not available!")
+
+    def on_map_save_complete(self, future):
+        try:
+            response = future.result()
+            self.get_logger().info("Map saved successfully. Processing image...")
+            time.sleep(2.0)
+            self.annotate_map_with_locations()
+        except Exception as e:
+            self.get_logger().error(f"Failed to save map: {str(e)}")
+
+    def annotate_map_with_locations(self):
+        self.get_logger().info(">>> STARTING MAP ANNOTATION (Clean Ver) <<<")
+
+        pgm_path = self.full_map_path + ".pgm"
+        yaml_path = self.full_map_path + ".yaml"
+
+        if not os.path.exists(pgm_path) or not os.path.exists(yaml_path):
+            self.get_logger().error("Map files not found!")
+            return
+
+        with open(yaml_path, "r") as f:
+            map_info = yaml.safe_load(f)
+
+        resolution = map_info["resolution"]
+        origin = map_info["origin"]
+        origin_x = origin[0]
+        origin_y = origin[1]
+
+        img = cv2.imread(pgm_path)
+        if img is None:
+            self.get_logger().error("Failed to load PGM image.")
+            return
+
+        height, width, _ = img.shape
+
+        def world_to_pixel(wx, wy):
+            px = int((wx - origin_x) / resolution)
+            py = int(height - 1 - (wy - origin_y) / resolution)
+            return px, py
+
+        # Home 표시
+        if self.start_pose:
+            sx, sy, _ = self.start_pose
+            px, py = world_to_pixel(sx, sy)
+            pink_color = (203, 192, 255)
+            cv2.circle(img, (px, py), 2, pink_color, -1)
+            self.get_logger().info(f"Marked HOME dot at ({px}, {py})")
+
+        # 큐브 표시
+        if os.path.exists(self.cube_log_path):
+            with open(self.cube_log_path, "r") as f:
+                lines = f.readlines()
+
+            for line in lines[1:]:
+                parts = line.strip().split(",")
+                if len(parts) < 4:
+                    continue
+
+                target_name = parts[1].strip()
+                try:
+                    cx = float(parts[2].strip())
+                    cy = float(parts[3].strip())
+                except ValueError:
+                    continue
+
+                px, py = world_to_pixel(cx, cy)
+
+                color = (255, 255, 255)
+                if "red" in target_name:
+                    color = (0, 0, 255)
+                elif "blue" in target_name:
+                    color = (255, 0, 0)
+                elif "green" in target_name:
+                    color = (0, 255, 0)
+                elif "yellow" in target_name:
+                    color = (0, 255, 255)
+
+                cv2.circle(img, (px, py), 2, color, -1)
+                self.get_logger().info(f"Marked dot for {target_name} at ({px}, {py})")
+
+        # 최종 이미지 저장
+        output_path = os.path.join(self.save_dir, "final_mission_map.png")
+        cv2.imwrite(output_path, img)
+        self.get_logger().info(f"SUCCESS: Clean final map saved to {output_path}")
+
+        # [추가] CSV 변환 실행
+        self.export_cubes_to_csv()
+
+    # [새로 추가된 함수] TXT -> CSV 변환 (수식 적용)
+    def export_cubes_to_csv(self):
+        self.get_logger().info(">>> Exporting found_cubes.csv with formula <<<")
+
+        if not os.path.exists(self.cube_log_path):
+            self.get_logger().warn("No found_cubes.txt to convert.")
+            return
+
+        try:
+            with open(self.cube_log_path, "r") as f_in, open(
+                self.csv_output_path, "w"
+            ) as f_out:
+                lines = f_in.readlines()
+                # 헤더 작성
+                f_out.write("Timestamp,Target,X,Y\n")
+
+                for line in lines[1:]:  # 헤더 건너뛰기
+                    parts = line.strip().split(",")
+                    if len(parts) < 4:
+                        continue
+
+                    timestamp = parts[0].strip()
+                    target = parts[1].strip()
+                    try:
+                        raw_x = float(parts[2].strip())
+                        raw_y = float(parts[3].strip())
+
+                        # [요청하신 수식 적용]
+                        # |X| * 10 / 4 -> 반올림 -> 정수
+                        new_x = int(round(abs(raw_x) * 10 / 4))
+                        new_y = int(round(abs(raw_y) * 10 / 4))
+
+                        f_out.write(f"{timestamp},{target},{new_x},{new_y}\n")
+                    except ValueError:
+                        continue
+
+            self.get_logger().info(
+                f"Successfully exported CSV to {self.csv_output_path}"
+            )
+
+        except Exception as e:
+            self.get_logger().error(f"Failed to export CSV: {e}")
 
     def go_home(self):
         if not self.start_pose:
             self.get_logger().error("Cannot go home: Start pose not saved yet.")
             return
+
+        self.clear_costmaps()
+
         if self.going_home:
-            return
-        if self._goal_handle:
-            try:
-                self._goal_handle.cancel_goal_async()
-            except:
-                pass
-        self.going_home = True
-        self.get_logger().info(
-            ">>> FINISHING EXPLORATION: Saving Map & Pausing SLAM... <<<"
-        )
-        self.save_and_pause_slam()
+            pass
+        else:
+            if self._goal_handle:
+                try:
+                    self._goal_handle.cancel_goal_async()
+                except:
+                    pass
+            self.going_home = True
+            self.get_logger().info(
+                ">>> FINISHING EXPLORATION: Going Home (FORCE MODE) <<<"
+            )
+
         x, y, yaw = self.start_pose
         self.send_goal(x, y, yaw)
 
     def find_frontiers(
         self, grid: OccupancyGrid, min_size: int
     ) -> List[List[Tuple[int, int]]]:
+        # [원복 완료] 안전장치(margin) 제거된 기존 코드
         info = grid.info
         data = grid.data
         w = info.width
@@ -386,9 +533,8 @@ class FrontierExplorer(Node):
         return False
 
     def plan_and_go(self, grid, use_relaxation=False, recursion_depth=0):
-        if self.is_paused:  # Paused Check
+        if self.is_paused:
             return
-
         if recursion_depth > 5:
             self.get_logger().warn("Max recursion reached.")
             self.no_valid_goal_count += 1
@@ -396,7 +542,6 @@ class FrontierExplorer(Node):
                 self.get_logger().warn("Recursion limit hit 20+. RETURNING HOME.")
                 self.go_home()
             return
-
         if not self.nav_client.server_is_ready() or self.going_home:
             return
 
@@ -412,9 +557,7 @@ class FrontierExplorer(Node):
                     self.min_frontier = 2
                     self.no_frontier_count = 0
                 else:
-                    self.get_logger().warn(
-                        ">>> No frontiers left even with size 2. GOING HOME <<<"
-                    )
+                    self.get_logger().warn(">>> No frontiers left. GOING HOME <<<")
                     self.go_home()
             return
         else:
@@ -488,26 +631,48 @@ class FrontierExplorer(Node):
         if not h or not h.accepted:
             self.get_logger().warn("Goal rejected.")
             self.current_goal_future = None
+            if self.going_home:
+                self.get_logger().warn(
+                    "Home Goal Rejected immediately! Clearing Map & Retrying..."
+                )
+                self.clear_costmaps()
+                time.sleep(1.0)
+                self.go_home()
             return
         self._goal_handle = h
         self.result_future = h.get_result_async()
         self.result_future.add_done_callback(self._goal_result)
 
     def _goal_result(self, fut):
-        # 정지상태면 결과 처리 무시
         if self.is_paused:
             return
-        status = fut.result().status
+        result = fut.result()
+        status = result.status
         self.get_logger().info(f"Goal finished: {status}")
         self.current_goal_future = None
         self._goal_handle = None
         self.current_target_grid = None
         self.path_update_count = 0
+
         if self.going_home:
             if status == 4:
-                self.get_logger().info("Mission Complete (Arrived Home).")
+                self.get_logger().info(
+                    "Mission Complete (Arrived Home). Saving Map & Pausing SLAM."
+                )
+                self.save_and_pause_slam()
             else:
-                self.get_logger().warn(f"Home return finished with status {status}.")
+                self.get_logger().warn(
+                    f"Home return failed (Status: {status}). FORCE RETRYING..."
+                )
+                self.clear_costmaps()
+                time.sleep(1.5)
+                if self.start_pose:
+                    x, y, yaw = self.start_pose
+                    self.send_goal(x, y, yaw)
+                else:
+                    self.get_logger().error("Start pose lost! Saving anyway.")
+                    self.save_and_pause_slam()
+
         elif self._last_map:
             self.plan_and_go(self._last_map)
 
