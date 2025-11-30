@@ -1,0 +1,60 @@
+running egg_info
+creating build/tb3_auto_explore/tb3_auto_explore.egg-info
+writing build/tb3_auto_explore/tb3_auto_explore.egg-info/PKG-INFO
+writing dependency_links to build/tb3_auto_explore/tb3_auto_explore.egg-info/dependency_links.txt
+writing entry points to build/tb3_auto_explore/tb3_auto_explore.egg-info/entry_points.txt
+writing requirements to build/tb3_auto_explore/tb3_auto_explore.egg-info/requires.txt
+writing top-level names to build/tb3_auto_explore/tb3_auto_explore.egg-info/top_level.txt
+writing manifest file 'build/tb3_auto_explore/tb3_auto_explore.egg-info/SOURCES.txt'
+reading manifest file 'build/tb3_auto_explore/tb3_auto_explore.egg-info/SOURCES.txt'
+writing manifest file 'build/tb3_auto_explore/tb3_auto_explore.egg-info/SOURCES.txt'
+running build
+running build_py
+creating /home/ho/tb3_auto_explore/build/tb3_auto_explore/build
+creating /home/ho/tb3_auto_explore/build/tb3_auto_explore/build/lib
+creating /home/ho/tb3_auto_explore/build/tb3_auto_explore/build/lib/tb3_auto_explore
+copying tb3_auto_explore/frontier_explorer.py -> /home/ho/tb3_auto_explore/build/tb3_auto_explore/build/lib/tb3_auto_explore
+copying tb3_auto_explore/explore_game2.py -> /home/ho/tb3_auto_explore/build/tb3_auto_explore/build/lib/tb3_auto_explore
+copying tb3_auto_explore/initial_pose_from_file.py -> /home/ho/tb3_auto_explore/build/tb3_auto_explore/build/lib/tb3_auto_explore
+copying tb3_auto_explore/__init__.py -> /home/ho/tb3_auto_explore/build/tb3_auto_explore/build/lib/tb3_auto_explore
+running install
+running install_lib
+creating /home/ho/tb3_auto_explore/install/tb3_auto_explore/lib/python3.10/site-packages/tb3_auto_explore
+copying /home/ho/tb3_auto_explore/build/tb3_auto_explore/build/lib/tb3_auto_explore/frontier_explorer.py -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/lib/python3.10/site-packages/tb3_auto_explore
+copying /home/ho/tb3_auto_explore/build/tb3_auto_explore/build/lib/tb3_auto_explore/explore_game2.py -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/lib/python3.10/site-packages/tb3_auto_explore
+copying /home/ho/tb3_auto_explore/build/tb3_auto_explore/build/lib/tb3_auto_explore/initial_pose_from_file.py -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/lib/python3.10/site-packages/tb3_auto_explore
+copying /home/ho/tb3_auto_explore/build/tb3_auto_explore/build/lib/tb3_auto_explore/__init__.py -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/lib/python3.10/site-packages/tb3_auto_explore
+byte-compiling /home/ho/tb3_auto_explore/install/tb3_auto_explore/lib/python3.10/site-packages/tb3_auto_explore/frontier_explorer.py to frontier_explorer.cpython-310.pyc
+byte-compiling /home/ho/tb3_auto_explore/install/tb3_auto_explore/lib/python3.10/site-packages/tb3_auto_explore/explore_game2.py to explore_game2.cpython-310.pyc
+byte-compiling /home/ho/tb3_auto_explore/install/tb3_auto_explore/lib/python3.10/site-packages/tb3_auto_explore/initial_pose_from_file.py to initial_pose_from_file.cpython-310.pyc
+byte-compiling /home/ho/tb3_auto_explore/install/tb3_auto_explore/lib/python3.10/site-packages/tb3_auto_explore/__init__.py to __init__.cpython-310.pyc
+running install_data
+creating /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/ament_index
+creating /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/ament_index/resource_index
+creating /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/ament_index/resource_index/packages
+copying resource/tb3_auto_explore -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/ament_index/resource_index/packages
+copying package.xml -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore
+creating /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore/launch
+copying launch/explore_bringup.launch.py -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore/launch
+copying launch/explore_game2.launch.py -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore/launch
+creating /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore/param
+copying param/slam_toolbox.yaml -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore/param
+copying param/burger.yaml -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore/param
+creating /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore/config
+copying config/ekf.yaml -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore/config
+copying config/slam_toolbox_loopsafe.yaml -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore/config
+copying config/nav2_params.yaml -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore/config
+copying config/nav2_explore_tune.yaml -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore/config
+copying config/slam_toolbox.yaml -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore/config
+copying config/nav2.yaml -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore/config
+copying config/blank.yaml -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore/config
+creating /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore/map
+copying map/start_pose.txt -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore/map
+copying map/mission_map.yaml -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore/map
+copying map/mission_map.pgm -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore/map
+running install_egg_info
+Copying build/tb3_auto_explore/tb3_auto_explore.egg-info to /home/ho/tb3_auto_explore/install/tb3_auto_explore/lib/python3.10/site-packages/tb3_auto_explore-0.0.1-py3.10.egg-info
+running install_scripts
+Installing explore_game2 script to /home/ho/tb3_auto_explore/install/tb3_auto_explore/lib/tb3_auto_explore
+Installing frontier_explorer script to /home/ho/tb3_auto_explore/install/tb3_auto_explore/lib/tb3_auto_explore
+writing list of installed files to '/home/ho/tb3_auto_explore/build/tb3_auto_explore/install.log'

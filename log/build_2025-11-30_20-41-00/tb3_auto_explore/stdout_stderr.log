@@ -1,0 +1,22 @@
+running egg_info
+writing build/tb3_auto_explore/tb3_auto_explore.egg-info/PKG-INFO
+writing dependency_links to build/tb3_auto_explore/tb3_auto_explore.egg-info/dependency_links.txt
+writing entry points to build/tb3_auto_explore/tb3_auto_explore.egg-info/entry_points.txt
+writing requirements to build/tb3_auto_explore/tb3_auto_explore.egg-info/requires.txt
+writing top-level names to build/tb3_auto_explore/tb3_auto_explore.egg-info/top_level.txt
+reading manifest file 'build/tb3_auto_explore/tb3_auto_explore.egg-info/SOURCES.txt'
+writing manifest file 'build/tb3_auto_explore/tb3_auto_explore.egg-info/SOURCES.txt'
+running build
+running build_py
+running install
+running install_lib
+running install_data
+copying launch/explore_game2.launch.py -> /home/ho/tb3_auto_explore/install/tb3_auto_explore/share/tb3_auto_explore/launch
+running install_egg_info
+removing '/home/ho/tb3_auto_explore/install/tb3_auto_explore/lib/python3.10/site-packages/tb3_auto_explore-0.0.1-py3.10.egg-info' (and everything under it)
+Copying build/tb3_auto_explore/tb3_auto_explore.egg-info to /home/ho/tb3_auto_explore/install/tb3_auto_explore/lib/python3.10/site-packages/tb3_auto_explore-0.0.1-py3.10.egg-info
+running install_scripts
+Installing explore_game2 script to /home/ho/tb3_auto_explore/install/tb3_auto_explore/lib/tb3_auto_explore
+Installing frontier_explorer script to /home/ho/tb3_auto_explore/install/tb3_auto_explore/lib/tb3_auto_explore
+Installing initial_pose_from_file script to /home/ho/tb3_auto_explore/install/tb3_auto_explore/lib/tb3_auto_explore
+writing list of installed files to '/home/ho/tb3_auto_explore/build/tb3_auto_explore/install.log'
